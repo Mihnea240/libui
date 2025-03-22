@@ -7,16 +7,12 @@ export class Types{
         if (!node.getAttribute("data-leaf")) return;
         return this[node.getAttribute("data-type") || "Default"].set(node, value);
     }
-    static instantiate(name, data) {
-        switch (typeof data) {
-            case "string": return this.Text.instantiate(name, data);
-            case "number": case "bigint": return this.Text.instantiate(name, data);
-            case "boolean": return this.Bool.instantiate(name, data);
-            case "object": {
-                let element = this[data.type || "Default"].instantiate(name, data.value);
-                return element;
-            }
-        }
+	static instantiate(name, data) {
+		if (typeof data == "object") {
+			let element = this[data.type || "Default"].instantiate(name, data.value);
+            return element;
+		}
+		return this[typeof data || "Default"].instantiate(name, data);
     }
 
     static Default= class {
@@ -36,21 +32,21 @@ export class Types{
         static get(node) {return node.querySelector("input").value;}
     }
 
-    static Text = class extends this.Default{
+    static string = class extends this.Default{
         static instantiate(name, data) {
             let element = super.instantiate(name);
             element.querySelector("input").setAttribute("type", "text");
-            element.setAttribute("data-type", "Text");
+            element.setAttribute("data-type", "string");
             this.set(element, data);
             return element
         }
     }
     
-    static Number = class extends this.Default{
+    static number = class extends this.Default{
         static instantiate(name,data) {
             let element = super.instantiate(name);
             element.querySelector("input").setAttribute("type", "number");
-            element.setAttribute("data-type", "Number");
+            element.setAttribute("data-type", "number");
 
             this.set(element, data);
             return element
@@ -58,11 +54,11 @@ export class Types{
         
     }
 
-    static Bool= class extends this.Default{
+    static boolean= class extends this.Default{
         static instantiate(name, data) {
             let element = super.instantiate(name);
             element.querySelector("input").setAttribute("type", "checkbox");
-            element.setAttribute("data-type", "Bool");
+            element.setAttribute("data-type", "boolean");
 
             this.set(element, data);
             return element
@@ -74,34 +70,40 @@ export class Types{
 }
 
 export class TreeMenu extends HTMLElement{
-    static enum = {
+    static alias = {
         node: "data-node",
-        leaf: "data-leaf",
+		leaf: "data-leaf",
+		nodeChange: "nodechange",
     }
-    static nodeTemplate(name) {
+    static DefaultNodeTemplate(name) {
         let div = document.createElement("div");
-        div.setAttribute("data-node", name);
+        div.setAttribute(TreeMenu.alias.node, name);
         return div;
     }
 
     constructor() {
 
         super();
-
+		this.ignoreParseObj={value: 0}
         this.proxyTraps = {
 
             get: (target, key) => {
                 return target[key];
             },
 
-            set: (target, key, data, receiver) => {
-                if (data?.hasOwnProperty("bypassSecurity")) {
-                    target[key] = data.bypassSecurity;
+			set: (target, key, data, receiver) => {
+				//Data in this object will not be parsed
+				if (data===this.ignoreParseObj) {
+                    target[key] = data.value;
                     return true;
-                }
-                let prop = target[key];
-                if (data===undefined) {
-                    this.deleteNode(target, key);
+				}
+				
+				let prop = target[key];
+				
+				if (data === undefined || data === null) {
+					if (prop) {
+						this.deleteNode(target, key);
+					}
                     return true;
                 }
 
@@ -112,8 +114,10 @@ export class TreeMenu extends HTMLElement{
                 }
 
                 if (prop.hasOwnProperty("value")) {
-                    let node = this.nodeToHtmlMap.get(prop), value;
-                    if (typeof data === "object" && data.hasOwnProperty("value")) {
+					let node = this.nodeToHtmlMap.get(prop), value;
+					
+					
+					if (typeof data === "object" && data.hasOwnProperty("value")) {
                         this.nodeToHtmlMap.delete(prop);
                         this.nodeToHtmlMap.set(target[key] = data, node);
                         
@@ -128,7 +132,7 @@ export class TreeMenu extends HTMLElement{
                     this.addNode(receiver, key, data);
                 }
                 return true;
-            },
+            }
         }
 
         this.nodeToHtmlMap = new Map();
@@ -137,72 +141,92 @@ export class TreeMenu extends HTMLElement{
         this.triggersEvents = true;
 
         this.addEventListener("change", (ev) => {
-            let chain = this.chainFromNode(ev.target);
+            let chain = this.chainFromElement(ev.target);
             let ref = this.refrence(chain, 1);
             let prop = chain[chain.length - 1];
 
             
-            let value = ref[prop].value = Types.getValue(ev.target.closest(`[${TreeMenu.enum.leaf}]`));
+            let value = ref[prop].value = Types.getValue(ev.target.closest(`[${TreeMenu.alias.leaf}]`));
 
             this.triggerEvent(ref, prop, value);
         })
-    }
+	}
+	
+	/**
+	 * 
+	 * @param {Object} parent the parent of the removed node
+	 * @param {String} prop its name
+	 * @param {any} data its value
+	 * 
+	 */
+    triggerEvent(parent, prop, data) {
+		if (!this.triggersEvents) return;
 
-    triggerEvent(node, prop, data) {
-        if(this.triggersEvents)return this.dispatchEvent(new CustomEvent("nodechange", { bubbles: true, detail: { node, prop, data } }));
-    }
+		return this.dispatchEvent(
+			new CustomEvent(TreeMenu.alias.nodeChange, { bubbles: true, detail: { parent, prop, data } })
+		);
+	}
 
-    addNode(ref, name, data, htmlNode) {
-        let element, proxyObject={}, newNode;
+    addNode(ref, name, data, htmlElement) {
+		let element, proxyObject = {}, newNode;
 
-        if (!data && htmlNode) data = Types.getValue(htmlNode);
+		if (!data && htmlElement) data = Types.getValue(htmlElement);
+		
         if (typeof data === "object") {
             if (data.value) proxyObject = data;
         } else {
-            proxyObject = { value: data };
-        }
+			proxyObject = {
+				type: typeof data,
+				value: data
+			};
+		}
+		this.ignoreParseObj.value = proxyObject.value ?
+			proxyObject :
+			new Proxy(proxyObject, this.proxyTraps);
+		
+		ref[name] = this.ignoreParseObj;
+		newNode = ref[name];
 
-        if (proxyObject.value) ref[name] = { bypassSecurity: proxyObject };
-        else ref[name] = { bypassSecurity: new Proxy(proxyObject, this.proxyTraps) };
-        newNode = ref[name];
-
-        if (!htmlNode) {
+        if (!htmlElement) {
             if (proxyObject.value) {
                 element = Types.instantiate(name, proxyObject);
-                element.setAttribute("data-leaf", name);
+                element.setAttribute(TreeMenu.alias.leaf, name);
 
                 this.nodeToHtmlMap.set(newNode, element);
                 this.nodeToHtmlMap.get(ref).appendChild(element);
             } else {
-                element = (this.nodeTemplate || TreeMenu.nodeTemplate)(name);
+                element = (this.nodeTemplate || TreeMenu.DefaultNodeTemplate)(name);
                 this.nodeToHtmlMap.get(ref).appendChild(element);
 
-                if (!element.hasAttribute(TreeMenu.enum.node) && !element.hasAttribute(TreeMenu.enum.leaf)) {
-                    element = element.querySelector(`[${TreeMenu.enum.node}], [${TreeMenu.enum.leaf}]`);
+                if (!element.hasAttribute(TreeMenu.alias.node) && !element.hasAttribute(TreeMenu.alias.leaf)) {
+                    element = element.querySelector(`[${TreeMenu.alias.node}], [${TreeMenu.alias.leaf}]`);
                 }
                 this.nodeToHtmlMap.set(newNode, element);
             }
-        }else this.nodeToHtmlMap.set(newNode, htmlNode);
+        }else this.nodeToHtmlMap.set(newNode, htmlElement);
 
         if (proxyObject.value) {
             Types.setValue(this.nodeToHtmlMap.get(newNode), proxyObject.value);
         } else {
             for (const key in data) this.addNode(newNode, key, data[key]);
-            
         }
 
         return newNode;
-    }
-    deleteNode(target, prop) {
-
-        for (const key in target[prop]) {
-            if (key != "value") this.deleteNode(target[prop], key);
-        }
-        this.nodeToHtmlMap.get(target[prop]).remove();
-        this.nodeToHtmlMap.delete(target[prop]); 
+	}
+	/**
+	 * @param parent Tree menu node
+	 * @param {String} child name of field to be erased 
+	 */
+    deleteNode(parent, child) {
+        for (const key in parent[child]) {
+            if (key != "value" && key!="type") this.deleteNode(parent[child], key);
+		}
+		//console.log(parent, child)
+        this.nodeToHtmlMap.get(parent[child]).remove();
+        this.nodeToHtmlMap.delete(parent[child]); 
         
-        this.triggerEvent(target, prop, null);
-        target[prop] = { bypassSecurity: undefined };
+        this.triggerEvent(parent, child, null);
+		delete parent[child];
     }
 
     parseChildren(htmlParent = this, nodeParent = this.dataTree) {
@@ -222,42 +246,75 @@ export class TreeMenu extends HTMLElement{
         }
     }
 
-    refrence(chain, ofsset = 0) {
+	/**
+	 * 
+	 * @param {String[]} chain 
+	 * @param {Number} ofsset 
+	 * @returns {Object} The menu node at the given path
+	 */
+    refrence(path, ofsset = 0) {
         let ref = this.dataTree;
-        for (let i = 0; i < chain.length-ofsset; i++){
-            ref = ref[chain[i]];
+        for (let i = 0; i < path.length-ofsset; i++){
+            ref = ref[path[i]];
             if (!ref) return undefined;
         }
         return ref;
     }
-
-    chainFromNode(target) {
+	/**
+	 * @param {HTMLElement} target 
+	 * @returns {String[]}
+	 * @description the path to target or the closest node of the tree menu
+	 */
+    chainFromElement(target) {
         
         let chain = [];
         let f = (target) => {
             if (target == this) return;
 
-            let name = target.getAttribute("data-node");
+            let name = target.getAttribute(TreeMenu.alias.node);
 
             f(target.parentElement);
 
-            if (name) chain.push(name);
-            else {
-                name = target.getAttribute("data-leaf");
-                if (name) chain.push(name);
-            }
-        }
+			let v = name || target.getAttribute(TreeMenu.alias.leaf);
+            if (v) chain.push(v);
+		}
+		
         f(target);
         return chain;
     }
 
     connectedCallback() {
-        if (!Object.values(this.dataTree).length) this.parseChildren();
+        if (!this.nodeToHtmlMap.size) this.parseChildren();
     }
-    
+    /**
+	 * @returns {TreeMenu} 
+	 * @param {Object} data The hierarchy of the menu
+	 * @example
+	 * ```
+	 *{  
+	 *	Group1: {  
+	 *		field1: {  
+	 *			type: "Bool",  
+	 *			value: true,  
+	 *		},
+	 *		field2: {
+	 *			type: "Number",  
+	 *			value: -1,
+	 *		},  
+	 *		field3: true  
+	 *	},  
+	 *
+	 *	Group2: {  
+     	field3: {  
+	 *			type: "custom",  
+	 *		}  
+	 *	}  
+	 *}  
+	 * ```
+	*/
     static parse(data) {
         let tree = document.createElement("tree-menu");
-        for (const key in data) tree.addNode(tree.dataTree, key, data[key]);
+        for (const name in data) tree.addNode(tree.dataTree, name, data[name]);
         return tree; 
     }
 }
